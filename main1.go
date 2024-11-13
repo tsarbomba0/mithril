@@ -13,8 +13,28 @@ import (
 	"strings"
 )
 
+type ws struct {
+	conn   net.Conn
+	status int
+}
+
+func createWebSocket(addr string, port string, handler func(websocket *ws)) {
+	listener, err := net.Listen("tcp", addr+":"+port)
+	onError(err)
+	defer listener.Close()
+
+	for {
+		connection, err := listener.Accept()
+		onError(err)
+
+		// go routine
+		go handler(&ws{conn: connection})
+
+	}
+}
+
 // Creates the hash used to accept a WebSocket connection.
-func acceptHash(k string) string {
+func (ws ws) acceptHash(k string) string {
 	h := sha1.New()
 	h.Write([]byte(k))
 	h.Write([]byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
@@ -22,18 +42,18 @@ func acceptHash(k string) string {
 }
 
 // Returns a handshake to be sent via HTTP.
-func serverHandshake(secretKey string) string {
+func (ws ws) serverHandshake(secretKey string) string {
 	var req strings.Builder
 	req.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
 	req.WriteString("Connection: Upgrade\r\n")
 	req.WriteString("Upgrade: websocket\r\n")
-	req.WriteString(fmt.Sprintf("Sec-WebSocket-Accept: %s", acceptHash(secretKey)+"\r\n\r\n"))
+	req.WriteString(fmt.Sprintf("Sec-WebSocket-Accept: %s", ws.acceptHash(secretKey)+"\r\n\r\n"))
 
 	return req.String()
 }
 
 // Gets HTTP Headers
-func getHTTPHeaders(dataBytes []byte) map[string]string {
+func (ws ws) getHTTPHeaders(dataBytes []byte) map[string]string {
 	// Map to hold the headers
 	settings := make(map[string]string)
 
@@ -57,12 +77,11 @@ func getHTTPHeaders(dataBytes []byte) map[string]string {
 			settings[key] = value
 		}
 	}
-
 	return settings
 }
 
 // Function to determine the type of the request and the route
-func determineRequest(byteArray []byte) (string, string, error) {
+func (ws ws) determineRequest(byteArray []byte) (string, string, error) {
 	buf := make([]byte, 128)
 	reader := bytes.NewReader(byteArray)
 	index, err := reader.Read(buf)
@@ -84,10 +103,10 @@ func onError(err error) {
 	}
 }
 
-func Connection(conn net.Conn) {
+func Connection(ws *ws) {
 	bytes := make([]byte, 256)
 	for {
-		length, err := conn.Read(bytes)
+		length, err := ws.conn.Read(bytes)
 		if err == io.EOF {
 			err = nil
 		} else {
@@ -97,13 +116,13 @@ func Connection(conn net.Conn) {
 		//method, route, err := determineRequest(bytes[:length])
 		//onError(err)
 
-		headers := getHTTPHeaders(bytes[:length])
+		headers := ws.getHTTPHeaders(bytes[:length])
 		fmt.Print(headers["Sec-WebSocket-Key"])
 
-		conn.Write([]byte(serverHandshake(headers["Sec-WebSocket-Key"])))
+		ws.conn.Write([]byte(ws.serverHandshake(headers["Sec-WebSocket-Key"])))
 
 	}
-	conn.Close()
+	ws.conn.Close()
 }
 
 func main() {
@@ -124,16 +143,6 @@ func main() {
 		serverPort = "80"
 	}
 
-	listener, err := net.Listen("tcp", serverAddress+":"+serverPort)
-	onError(err)
-	defer listener.Close()
+	createWebSocket(serverAddress, serverPort, Connection)
 
-	for {
-		connection, err := listener.Accept()
-		onError(err)
-
-		// go routine
-		go Connection(connection)
-
-	}
 }
