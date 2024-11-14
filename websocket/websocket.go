@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -63,7 +64,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 			bytes := make([]byte, 256)
 			length, err := ws.Conn.Read(bytes)
 			if err == io.EOF {
-				err = nil
+				ws.Conn.Close()
 			} else {
 				onError(err)
 			}
@@ -79,9 +80,26 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 				} else {
 					headers := ws.GetHTTPHeaders(bytes[:length])
 					ws.ServerHandshake(headers["Sec-WebSocket-Key"])
+
+					//testBytes := make([]byte, 16)
 					for {
+						// Handles a closed connection
+						// Closed connection defined as
+						// either receiving a empty bytearray
+						//l, _ := ws.Conn.Read(testBytes)
+						//fmt.Println(l)
+						//if l > 0 && testBytes[0] != 136 {
 						handler(ws)
+						/*
+							} else {
+								ws.Conn.Write(testBytes)
+								ws.Conn.Close()
+								fmt.Println("Closed!")
+								return
+							}*/
+
 					}
+
 				}
 
 			} else {
@@ -165,4 +183,58 @@ func (ws Ws) SendHTTPError(errorCode string, reason string) {
 	response.WriteString("Content-Language: en\r\n\r\n")
 	response.WriteString(reason + "\r\n\r\n")
 	ws.Conn.Write([]byte(response.String()))
+}
+
+// Reading a frame
+func (ws Ws) ReadFrame(frame []byte) (string, error) {
+	var err error = nil
+	var decodedPayload strings.Builder
+	// TODO: info from the first byte
+
+	// creates a error if the mask is unmasked
+	// MASK bit set to 0
+	if frame[0]&128 == 0 {
+		err = errors.New("unmasked frame")
+		fmt.Println(frame[0])
+	} else {
+		if frame[1]&127 == 127 {
+			mask := frame[11:15]
+			payload := frame[15:]
+
+			var decodedPayload strings.Builder
+			for i := 0; i != len(payload); i++ {
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
+
+		} else if frame[1]&127 == 126 {
+			mask := frame[4:8]
+			payload := frame[8:]
+
+			var decodedPayload strings.Builder
+			for i := 0; i != len(payload); i++ {
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
+
+		} else if frame[1]&127 == 125 {
+			fmt.Println("Control frame!")
+		} else {
+			// mask
+			mask := frame[2:6]
+			// actual payload data
+			payload := frame[6:]
+
+			// string builder
+
+			// performing a XOR on payload byte with mask byte
+			for i := 0; i != len(payload); i++ {
+				fmt.Println(payload[i], mask[i%4], payload[i]^mask[i%4])
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
+
+		}
+
+	}
+
+	// return value
+	return decodedPayload.String(), err
 }
