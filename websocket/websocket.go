@@ -1,9 +1,11 @@
 package websocket
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -36,9 +38,11 @@ var HttpErrorCodes map[string]string = map[string]string{
 	"408": "Request Timeout",
 }
 
+// WebSocket type
 type Ws struct {
 	Conn   net.Conn
 	Status uint8
+	Buffer *bufio.ReadWriter
 }
 
 // Error handler
@@ -59,6 +63,9 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 		connection, err := listener.Accept()
 		onError(err)
 
+		// Buffer
+		buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
+		fmt.Println("Hah!")
 		// goroutine
 		go func(ws *Ws) {
 			bytes := make([]byte, 256)
@@ -78,25 +85,25 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 					ws.Conn.Close()
 					return
 				} else {
+
 					headers := ws.GetHTTPHeaders(bytes[:length])
 					ws.ServerHandshake(headers["Sec-WebSocket-Key"])
 
-					//testBytes := make([]byte, 16)
+					testBytes := make([]byte, 2)
 					for {
 						// Handles a closed connection
 						// Closed connection defined as
 						// either receiving a empty bytearray
-						//l, _ := ws.Conn.Read(testBytes)
+						l, _ := ws.Conn.Read(testBytes)
 						//fmt.Println(l)
-						//if l > 0 && testBytes[0] != 136 {
-						handler(ws)
-						/*
-							} else {
-								ws.Conn.Write(testBytes)
-								ws.Conn.Close()
-								fmt.Println("Closed!")
-								return
-							}*/
+						if l > 0 && testBytes[0] != 136 {
+							handler(ws)
+						} else {
+							ws.Conn.Write(testBytes)
+							ws.Conn.Close()
+							fmt.Println("Closed!")
+							return
+						}
 
 					}
 
@@ -107,7 +114,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 				ws.SendHTTPError("400", "Invalid route! ("+route+")")
 				ws.Conn.Close()
 			}
-		}(&Ws{Conn: connection})
+		}(&Ws{Conn: connection, Buffer: buffer})
 
 	}
 }
@@ -146,7 +153,6 @@ func (ws Ws) GetHTTPHeaders(dataBytes []byte) map[string]string {
 		splitString := re.Split(headers[i], -1)
 
 		// if length of the split string is equal to 1 (empty slice) AND the next slice is not empty, do a error
-		fmt.Println(splitString, len(splitString))
 		if len(splitString) == 1 && len(re.Split(headers[i+1], -1)) != 1 {
 			onError(fmt.Errorf("unexpected separation of headers! (line %d)", i))
 
@@ -185,32 +191,49 @@ func (ws Ws) SendHTTPError(errorCode string, reason string) {
 	ws.Conn.Write([]byte(response.String()))
 }
 
-// Reading a frame
-func (ws Ws) ReadFrame(frame []byte) (string, error) {
+// Reads a frame and returns it as a string.
+// Returns a string and error
+// string is empty if the frame isn't masked
+// error is NOT nil if the frame isn't masked
+func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
+	// error variable
+	fmt.Println(frame)
 	var err error = nil
-	var decodedPayload strings.Builder
-	// TODO: info from the first byte
+	// decoded payload
+	var decodedPayload bytes.Buffer
 
-	// creates a error if the mask is unmasked
-	// MASK bit set to 0
-	if frame[0]&128 == 0 {
+	// TODO: info from the first byte
+	// info = frame[0]
+	fin := frame[0] & 128
+	rsv1 := frame[0] & 64
+	rsv2 := frame[0] & 32
+	rsv3 := frame[0] & 16
+	opcode := frame[0] & 15
+	fmt.Println(fin, rsv1, rsv2, rsv3, opcode)
+
+	// mask variable
+	var mask []byte
+
+	// payload variable
+	var payload []byte
+
+	// fix
+	if frame[1]&128 == 0 {
 		err = errors.New("unmasked frame")
 		fmt.Println(frame[0])
 	} else {
 		if frame[1]&127 == 127 {
-			mask := frame[11:15]
-			payload := frame[15:]
+			mask = frame[11:15]
+			payload = frame[15:]
 
-			var decodedPayload strings.Builder
 			for i := 0; i != len(payload); i++ {
 				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
 			}
 
 		} else if frame[1]&127 == 126 {
-			mask := frame[4:8]
-			payload := frame[8:]
+			mask = frame[4:8]
+			payload = frame[8:]
 
-			var decodedPayload strings.Builder
 			for i := 0; i != len(payload); i++ {
 				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
 			}
@@ -219,22 +242,69 @@ func (ws Ws) ReadFrame(frame []byte) (string, error) {
 			fmt.Println("Control frame!")
 		} else {
 			// mask
-			mask := frame[2:6]
+			mask = frame[2:6]
 			// actual payload data
-			payload := frame[6:]
-
-			// string builder
+			payload = frame[6:]
 
 			// performing a XOR on payload byte with mask byte
 			for i := 0; i != len(payload); i++ {
-				fmt.Println(payload[i], mask[i%4], payload[i]^mask[i%4])
 				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
 			}
-
 		}
 
 	}
 
-	// return value
-	return decodedPayload.String(), err
+	// return string and error
+	return decodedPayload.Bytes(), err
+}
+
+// create a frame
+func (ws *Ws) WriteFrame(content []byte) []byte {
+	var header []byte = make([]byte, 2)
+	header[0] = byte(130)
+
+	// data variable
+	var data []byte
+
+	// if length is less than 125, just attach it as a integer to the data array
+	if len(content) <= 125 {
+		header[1] = byte(len(content))
+		data = header
+		// if
+	} else if 65535 >= len(content) {
+		header[1] = 126
+
+		var size []byte
+		binary.BigEndian.PutUint16(size, uint16(len(content)))
+		data = append(header, size...)
+	} else if len(content) >= 65536 {
+		header[1] = 127
+
+		var size []byte
+		binary.BigEndian.PutUint64(size, uint64(len(content)))
+		data = append(header, size...)
+	}
+
+	// return byte array, length and error
+	return append(data, content...)
+
+}
+
+// Simplified Read function
+func (ws *Ws) Read() ([]byte, error) {
+	var byteArray []byte = make([]byte, 4096)
+	length, _ := ws.Buffer.Read(byteArray)
+	frame, err := ws.readFrame(byteArray[:length])
+	return frame, err
+}
+
+// Simplified Write function
+func (ws *Ws) Write(byteArray []byte) (int, error) {
+	frame := ws.WriteFrame(byteArray)
+	nn, err := ws.Buffer.Write(frame)
+	onError(err)
+	err = ws.Buffer.Flush()
+
+	// return amount of bytes written and error
+	return nn, err
 }

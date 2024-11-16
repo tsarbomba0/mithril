@@ -6,16 +6,20 @@ import (
 )
 
 func connection(ws *websocket.Ws) {
-	bytes := make([]byte, 256)
-	l, err := ws.Conn.Read(bytes)
+	output, err := ws.Read()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(bytes[:l])
-	ws.ReadFrame(bytes[:l])
+	fmt.Println(string(output))
+	if string(output) == "t" {
+		fmt.Println("Gah!")
+		l, err := ws.Write([]byte("Haha!"))
+		fmt.Println(l)
+		fmt.Println(err)
+	}
 
 }
 
 func main() {
-	websocket.CreateWebSocket("127.0.0.1", "222", connection, "/ws")
+	websocket.CreateWebSocket("127.0.0.1", "2000", connection, "/ws")
 }
