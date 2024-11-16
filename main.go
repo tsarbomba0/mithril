@@ -5,19 +5,16 @@ import (
 	"mithril/websocket"
 )
 
-func connection(ws *websocket.Ws) {
+func connection(ws *websocket.Ws) error {
 	output, err := ws.Read()
 	if err != nil {
-		panic(err)
+		if err == fmt.Errorf("empty array of bytes") {
+			fmt.Println("Closed conn")
+			return err
+		}
 	}
-	fmt.Println(string(output))
-	if string(output) == "t" {
-		fmt.Println("Gah!")
-		l, err := ws.Write([]byte("Haha!"))
-		fmt.Println(l)
-		fmt.Println(err)
-	}
-
+	ws.Write(output)
+	return err
 }
 
 func main() {

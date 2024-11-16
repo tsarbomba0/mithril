@@ -40,9 +40,10 @@ var HttpErrorCodes map[string]string = map[string]string{
 
 // WebSocket type
 type Ws struct {
-	Conn   net.Conn
-	Status uint8
-	Buffer *bufio.ReadWriter
+	Conn               net.Conn
+	Status             uint8
+	Buffer             *bufio.ReadWriter
+	ContinuationBuffer *bufio.ReadWriter
 }
 
 // Error handler
@@ -53,7 +54,7 @@ func onError(err error) {
 }
 
 // Creates a WebSocket
-func CreateWebSocket(addr string, port string, handler func(websocket *Ws), routeString string) {
+func CreateWebSocket(addr string, port string, handler func(websocket *Ws) error, routeString string) {
 	listener, err := net.Listen("tcp", addr+":"+port)
 	onError(err)
 	defer listener.Close()
@@ -65,7 +66,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 
 		// Buffer
 		buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
-		fmt.Println("Hah!")
+		continuationBuffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
 		// goroutine
 		go func(ws *Ws) {
 			bytes := make([]byte, 256)
@@ -89,20 +90,13 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 					headers := ws.GetHTTPHeaders(bytes[:length])
 					ws.ServerHandshake(headers["Sec-WebSocket-Key"])
 
-					testBytes := make([]byte, 2)
+					//testBytes := make([]byte, 16)
 					for {
-						// Handles a closed connection
-						// Closed connection defined as
-						// either receiving a empty bytearray
-						l, _ := ws.Conn.Read(testBytes)
-						//fmt.Println(l)
-						if l > 0 && testBytes[0] != 136 {
-							handler(ws)
-						} else {
-							ws.Conn.Write(testBytes)
+						err := handler(ws)
+						if err != nil {
+							fmt.Println("error: ", err)
 							ws.Conn.Close()
-							fmt.Println("Closed!")
-							return
+							break
 						}
 
 					}
@@ -114,7 +108,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws), rout
 				ws.SendHTTPError("400", "Invalid route! ("+route+")")
 				ws.Conn.Close()
 			}
-		}(&Ws{Conn: connection, Buffer: buffer})
+		}(&Ws{Conn: connection, Buffer: buffer, ContinuationBuffer: continuationBuffer})
 
 	}
 }
@@ -197,19 +191,29 @@ func (ws Ws) SendHTTPError(errorCode string, reason string) {
 // error is NOT nil if the frame isn't masked
 func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
 	// error variable
-	fmt.Println(frame)
 	var err error = nil
 	// decoded payload
 	var decodedPayload bytes.Buffer
 
+	// this checks if the frame has any content
+	// a empty array of bytes read from a tcp connection
+	// means that the connection has closed.
+	if len(frame) == 0 {
+		err = errors.New("empty array of bytes")
+		return decodedPayload.Bytes(), err
+	} else if frame[1]&128 == 0 {
+		// If the mask bit is 0, throw error
+		err = errors.New("unmasked frame")
+		return decodedPayload.Bytes(), err
+	}
+
 	// TODO: info from the first byte
 	// info = frame[0]
-	fin := frame[0] & 128
-	rsv1 := frame[0] & 64
-	rsv2 := frame[0] & 32
-	rsv3 := frame[0] & 16
-	opcode := frame[0] & 15
-	fmt.Println(fin, rsv1, rsv2, rsv3, opcode)
+	fin := frame[0] & (1 << 7)
+	//rsv1 := frame[0] & (1 << 6)
+	//rsv2 := frame[0] & (1 << 5)
+	//rsv3 := frame[0] & (1 << 4)
+	opcode := frame[0] & 0xF
 
 	// mask variable
 	var mask []byte
@@ -217,45 +221,42 @@ func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
 	// payload variable
 	var payload []byte
 
-	// fix
-	if frame[1]&128 == 0 {
-		err = errors.New("unmasked frame")
-		fmt.Println(frame[0])
-	} else {
-		if frame[1]&127 == 127 {
-			mask = frame[11:15]
-			payload = frame[15:]
+	// switch statement
+	switch frame[1] & 127 {
+	case 127:
+		mask = frame[11:15]
+		payload = frame[15:]
 
-			for i := 0; i != len(payload); i++ {
-				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
-			}
-
-		} else if frame[1]&127 == 126 {
-			mask = frame[4:8]
-			payload = frame[8:]
-
-			for i := 0; i != len(payload); i++ {
-				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
-			}
-
-		} else if frame[1]&127 == 125 {
-			fmt.Println("Control frame!")
-		} else {
-			// mask
-			mask = frame[2:6]
-			// actual payload data
-			payload = frame[6:]
-
-			// performing a XOR on payload byte with mask byte
-			for i := 0; i != len(payload); i++ {
-				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
-			}
+		for i := 0; i != len(payload); i++ {
+			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
 		}
+	case 126:
+		mask = frame[4:8]
+		payload = frame[8:]
 
+		for i := 0; i != len(payload); i++ {
+			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+		}
+	default:
+		// mask
+		mask = frame[2:6]
+		// actual payload data
+		payload = frame[6:]
+
+		// performing a XOR on payload byte with mask byte
+		for i := 0; i != len(payload); i++ {
+			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+		}
 	}
 
-	// return string and error
-	return decodedPayload.Bytes(), err
+	if fin == 0 && (opcode == 1 || opcode == 2) {
+		ws.ContinuationBuffer.Write(decodedPayload.Bytes())
+		return decodedPayload.Bytes(), err
+	} else {
+		// return string and error
+		return decodedPayload.Bytes(), err
+	}
+
 }
 
 // create a frame
@@ -295,6 +296,8 @@ func (ws *Ws) Read() ([]byte, error) {
 	var byteArray []byte = make([]byte, 4096)
 	length, _ := ws.Buffer.Read(byteArray)
 	frame, err := ws.readFrame(byteArray[:length])
+
+	// return decoded frame and error
 	return frame, err
 }
 
@@ -302,7 +305,7 @@ func (ws *Ws) Read() ([]byte, error) {
 func (ws *Ws) Write(byteArray []byte) (int, error) {
 	frame := ws.WriteFrame(byteArray)
 	nn, err := ws.Buffer.Write(frame)
-	onError(err)
+	fmt.Println(err)
 	err = ws.Buffer.Flush()
 
 	// return amount of bytes written and error
