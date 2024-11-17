@@ -40,10 +40,9 @@ var HttpErrorCodes map[string]string = map[string]string{
 
 // WebSocket type
 type Ws struct {
-	Conn               net.Conn
-	Status             uint8
-	Buffer             *bufio.ReadWriter
-	ContinuationBuffer *bufio.ReadWriter
+	Conn   net.Conn
+	Status uint8
+	Buffer *bufio.ReadWriter
 }
 
 // Error handler
@@ -53,8 +52,8 @@ func onError(err error) {
 	}
 }
 
-// Creates a WebSocket
-func CreateWebSocket(addr string, port string, handler func(websocket *Ws) error, routeString string) {
+// Creates a WebSocket server
+func CreateWebSocket(addr string, port string, handler func(websocket *Ws) (uint16, error), routeString string) {
 	listener, err := net.Listen("tcp", addr+":"+port)
 	onError(err)
 	defer listener.Close()
@@ -66,7 +65,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws) error
 
 		// Buffer
 		buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
-		continuationBuffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
+
 		// goroutine
 		go func(ws *Ws) {
 			bytes := make([]byte, 256)
@@ -90,12 +89,11 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws) error
 					headers := ws.GetHTTPHeaders(bytes[:length])
 					ws.ServerHandshake(headers["Sec-WebSocket-Key"])
 
-					//testBytes := make([]byte, 16)
 					for {
-						err := handler(ws)
+						status, err := handler(ws)
 						if err != nil {
 							fmt.Println("error: ", err)
-							ws.Conn.Close()
+							ws.close(status, err.Error())
 							break
 						}
 
@@ -108,7 +106,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *Ws) error
 				ws.SendHTTPError("400", "Invalid route! ("+route+")")
 				ws.Conn.Close()
 			}
-		}(&Ws{Conn: connection, Buffer: buffer, ContinuationBuffer: continuationBuffer})
+		}(&Ws{Conn: connection, Buffer: buffer})
 
 	}
 }
@@ -186,97 +184,130 @@ func (ws Ws) SendHTTPError(errorCode string, reason string) {
 }
 
 // Validates the received frame
-func validate (frame []byte) error {
+//
+// Returns a error (can be nil)
+func validate(frame []byte) (string, error) {
 	var err error
+
 	if len(frame) == 0 {
 		err = errors.New("empty array of bytes")
-		return err
+		return "empty", err
 	}
 
-	controlFrame := false
-	fragmented := false
+	var controlFrame bool = false
+	var frameType string
 
 	var fin byte = frame[0] & 128
-	var opcode byte = frame[0] & 3
+	var opcode byte = frame[0] & 15
 	var length byte = frame[1] & 127
 	var maskBit byte = frame[1] & 128
 
-	if fin == 0 {
-		fragmented = true
-	}
-
-	if opcode >= 8 || opcode <= 10 {
+	switch opcode {
+	case 0:
+		frameType = "continuation"
+	case 1:
+		frameType = "text"
+	case 2:
+		frameType = "binary"
+	case 8:
+		frameType = "close"
 		controlFrame = true
-	} 
-		
-	
-	// Checks if a control frame is fragmented
-	if fragmented && controlFrame {
-		return errors.New("fragmented control frame")
-	// Checks if a control frame has a larger payload than 125 bytes
-	} else if controlFrame && length > 125 {
-		return errors.New("length of control frame payload larger than 125 bytes")
-	// checks for a unmasked frame
-	} else if maskBit == 0 && !controlFrame {
-		return errors.New("unmasked frame")
+	case 9:
+		frameType = "ping"
+		controlFrame = true
+	case 10:
+		frameType = "pong"
+		controlFrame = true
+	default:
+		return "unknown", errors.New("used a reserved opcode")
 	}
 
-	return err
+	// Checks if a control frame is fragmented
+	if fin == 0 && controlFrame {
+		return frameType, errors.New("fragmented control frame")
+		// Checks if a control frame has a larger payload than 125 bytes
+	} else if controlFrame && length > 125 {
+		return frameType, errors.New("length of control frame payload larger than 125 bytes")
+		// checks for a unmasked frame
+	} else if maskBit == 0 && !controlFrame {
+		return frameType, errors.New("unmasked frame")
+	} else {
+		return frameType, nil
+	}
+
 }
 
 // Reads a frame and returns it as a string.
-// Returns a string and error
-func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
-	// error variable
-	var err error = nil
+//
+// Returns a bytearray and error (error can be nil)
+func (ws *Ws) readFrame(frame []byte) ([]byte, error, bool) {
 	// decoded payload
 	var decodedPayload bytes.Buffer
 
 	// Validating
-	err = validate(frame)
+	frameType, err := validate(frame)
 	if err != nil {
-		return decodedPayload.Bytes(), err
+		return decodedPayload.Bytes(), err, false
 	}
+
+	// variable for determining if it's a close frame
+	var isClose bool = false
 
 	// mask variable
 	var mask []byte
+
 	// payload variable
 	var payload []byte
-	// switch statement
-	switch frame[1] & 127 {
-	case 127:
-		mask = frame[11:15]
-		payload = frame[15:]
 
-		for i := 0; i != len(payload); i++ {
-			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
-		}
-	case 126:
-		mask = frame[4:8]
-		payload = frame[8:]
+	switch frameType {
+	case "binary":
+		fallthrough
+	case "text":
+		// switch statement
+		switch frame[1] & 127 {
+		case 127:
+			mask = frame[11:15]
+			payload = frame[15:]
 
-		for i := 0; i != len(payload); i++ {
-			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
-		}
-	default:
-		// mask
-		mask = frame[2:6]
-		// actual payload data
-		payload = frame[6:]
+			for i := 0; i != len(payload); i++ {
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
+		case 126:
+			mask = frame[4:8]
+			payload = frame[8:]
 
-		// performing a XOR on payload byte with mask byte
-		for i := 0; i != len(payload); i++ {
-			decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			for i := 0; i != len(payload); i++ {
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
+		default:
+			// mask
+			mask = frame[2:6]
+			// actual payload data
+			payload = frame[6:]
+
+			// performing a XOR on payload byte with mask byte
+			for i := 0; i != len(payload); i++ {
+				decodedPayload.WriteByte(payload[i] ^ mask[i%4])
+			}
 		}
+	case "ping":
+		ws.pong("Pong!")
+
+	case "pong":
+		fmt.Println("Received a pong frame!")
+
+	case "close":
+		isClose = true
 	}
-
 	// return string and error
-	return decodedPayload.Bytes(), err
-	
+	return decodedPayload.Bytes(), err, isClose
+
 }
 
-// create a frame
-func (ws *Ws) WriteFrame(content []byte, flags byte) []byte {
+// Create a frame to be sent to client.
+//
+// Returns a byte array.
+func (ws *Ws) createFrame(content []byte, flags byte) []byte {
 	var header []byte = make([]byte, 2)
 	header[0] = flags
 	// data variable
@@ -286,7 +317,7 @@ func (ws *Ws) WriteFrame(content []byte, flags byte) []byte {
 	if len(content) <= 125 {
 		header[1] = byte(len(content))
 		data = header
-		
+
 	} else if 65535 >= len(content) {
 		header[1] = 126
 
@@ -306,40 +337,42 @@ func (ws *Ws) WriteFrame(content []byte, flags byte) []byte {
 
 }
 
-// Simplified Read function
-func (ws *Ws) Read() ([]byte, error) {
+// Simplified Read function.
+func (ws *Ws) Read() ([]byte, error, bool) {
 	var byteArray []byte = make([]byte, 4096)
 	length, _ := ws.Buffer.Read(byteArray)
-	frame, err := ws.readFrame(byteArray[:length])
+	frame, err, isClose := ws.readFrame(byteArray[:length])
 
 	// return decoded frame and error
-	return frame, err
+	return frame, err, isClose
 }
 
-// Simplified Write function
+// Simplified Write function.
 func (ws *Ws) Write(byteArray []byte) (int, error) {
-	frame := ws.WriteFrame(byteArray, 130)
-	nn, err := ws.Buffer.Write(frame)
-	fmt.Println(err)
-	err = ws.Buffer.Flush()
+	frame := ws.createFrame(byteArray, 130)
+	nn, _ := ws.Buffer.Write(frame)
+	err := ws.Buffer.Flush()
 
 	// return amount of bytes written and error
 	return nn, err
 }
 
-// Write function that allows sending your own flags
-func (ws *Ws) SpecialWrite(byteArray []byte, flags byte) (int, error) {
-	frame := ws.WriteFrame(byteArray, flags)
+// Write function that allows sending your own flags.
+func (ws *Ws) specialWrite(byteArray []byte, flags byte) (int, error) {
+	frame := ws.createFrame(byteArray, flags)
+
 	nn, err := ws.Buffer.Write(frame)
-	fmt.Println(err)
-	err = ws.Buffer.Flush()
+
+	ws.Buffer.Flush()
 
 	// return amount of bytes written and error
 	return nn, err
 }
 
-// Sends a close frame with status code and a reason
-func (ws *Ws) Close(statusCode uint16, reason string) error {
+// Sends a close frame with status code and a reason.
+//
+// Returns a error (can be nil)
+func (ws *Ws) close(statusCode uint16, reason string) error {
 	if len(reason)+2 > 125 {
 		err := errors.New("control frame length exceeded 125")
 		return err
@@ -348,8 +381,18 @@ func (ws *Ws) Close(statusCode uint16, reason string) error {
 	var data = new(bytes.Buffer)
 
 	binary.Write(data, binary.BigEndian, statusCode)
-	binary.Write(data, binary.BigEndian, reason)
-	fmt.Println(data.Bytes())
-	_, err := ws.SpecialWrite(data.Bytes(), 136)
+	binary.Write(data, binary.BigEndian, []byte(reason))
+	_, err := ws.specialWrite(data.Bytes(), 136)
+	ws.Conn.Close()
+	return err
+}
+
+// Sends a pong
+//
+// Returns a error (can be nil)
+func (ws *Ws) pong(pongMessage string) error {
+	ws.Buffer.Write([]byte{138})
+	_, err := ws.Buffer.Write([]byte(pongMessage))
+	ws.Buffer.Flush()
 	return err
 }

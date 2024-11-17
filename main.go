@@ -1,24 +1,25 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"mithril/websocket"
 )
 
-func connection(ws *websocket.Ws) error {
-	output, err := ws.Read()
-	if err != nil {
-		if err == fmt.Errorf("empty array of bytes") {
-			fmt.Println("Closed conn")
-			return err
-		}
+func connection(ws *websocket.Ws) (uint16, error) {
+	output, err, isClose := ws.Read()
+	if isClose {
+		return 1000, errors.New("closed")
+	} else if err != nil {
+		return 1011, err
 	}
 
-	if string(output) == "test" {
-		ws.Close(1000, "Haha!")
+	if string(output) == "fake" {
+		return 1011, errors.New("test error")
+	} else {
+		ws.Write(output)
 	}
-	ws.Write(output)
-	return err
+
+	return 0, err
 }
 
 func main() {
