@@ -13,6 +13,10 @@ func connection(ws *websocket.Ws) error {
 			return err
 		}
 	}
+
+	if string(output) == "test" {
+		ws.Close(1000, "Haha!")
+	}
 	ws.Write(output)
 	return err
 }

@@ -185,42 +185,63 @@ func (ws Ws) SendHTTPError(errorCode string, reason string) {
 	ws.Conn.Write([]byte(response.String()))
 }
 
+// Validates the received frame
+func validate (frame []byte) error {
+	var err error
+	if len(frame) == 0 {
+		err = errors.New("empty array of bytes")
+		return err
+	}
+
+	controlFrame := false
+	fragmented := false
+
+	var fin byte = frame[0] & 128
+	var opcode byte = frame[0] & 3
+	var length byte = frame[1] & 127
+	var maskBit byte = frame[1] & 128
+
+	if fin == 0 {
+		fragmented = true
+	}
+
+	if opcode >= 8 || opcode <= 10 {
+		controlFrame = true
+	} 
+		
+	
+	// Checks if a control frame is fragmented
+	if fragmented && controlFrame {
+		return errors.New("fragmented control frame")
+	// Checks if a control frame has a larger payload than 125 bytes
+	} else if controlFrame && length > 125 {
+		return errors.New("length of control frame payload larger than 125 bytes")
+	// checks for a unmasked frame
+	} else if maskBit == 0 && !controlFrame {
+		return errors.New("unmasked frame")
+	}
+
+	return err
+}
+
 // Reads a frame and returns it as a string.
 // Returns a string and error
-// string is empty if the frame isn't masked
-// error is NOT nil if the frame isn't masked
 func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
 	// error variable
 	var err error = nil
 	// decoded payload
 	var decodedPayload bytes.Buffer
 
-	// this checks if the frame has any content
-	// a empty array of bytes read from a tcp connection
-	// means that the connection has closed.
-	if len(frame) == 0 {
-		err = errors.New("empty array of bytes")
-		return decodedPayload.Bytes(), err
-	} else if frame[1]&128 == 0 {
-		// If the mask bit is 0, throw error
-		err = errors.New("unmasked frame")
+	// Validating
+	err = validate(frame)
+	if err != nil {
 		return decodedPayload.Bytes(), err
 	}
 
-	// TODO: info from the first byte
-	// info = frame[0]
-	fin := frame[0] & (1 << 7)
-	//rsv1 := frame[0] & (1 << 6)
-	//rsv2 := frame[0] & (1 << 5)
-	//rsv3 := frame[0] & (1 << 4)
-	opcode := frame[0] & 0xF
-
 	// mask variable
 	var mask []byte
-
 	// payload variable
 	var payload []byte
-
 	// switch statement
 	switch frame[1] & 127 {
 	case 127:
@@ -249,21 +270,15 @@ func (ws *Ws) readFrame(frame []byte) ([]byte, error) {
 		}
 	}
 
-	if fin == 0 && (opcode == 1 || opcode == 2) {
-		ws.ContinuationBuffer.Write(decodedPayload.Bytes())
-		return decodedPayload.Bytes(), err
-	} else {
-		// return string and error
-		return decodedPayload.Bytes(), err
-	}
-
+	// return string and error
+	return decodedPayload.Bytes(), err
+	
 }
 
 // create a frame
-func (ws *Ws) WriteFrame(content []byte) []byte {
+func (ws *Ws) WriteFrame(content []byte, flags byte) []byte {
 	var header []byte = make([]byte, 2)
-	header[0] = byte(130)
-
+	header[0] = flags
 	// data variable
 	var data []byte
 
@@ -271,7 +286,7 @@ func (ws *Ws) WriteFrame(content []byte) []byte {
 	if len(content) <= 125 {
 		header[1] = byte(len(content))
 		data = header
-		// if
+		
 	} else if 65535 >= len(content) {
 		header[1] = 126
 
@@ -303,11 +318,38 @@ func (ws *Ws) Read() ([]byte, error) {
 
 // Simplified Write function
 func (ws *Ws) Write(byteArray []byte) (int, error) {
-	frame := ws.WriteFrame(byteArray)
+	frame := ws.WriteFrame(byteArray, 130)
 	nn, err := ws.Buffer.Write(frame)
 	fmt.Println(err)
 	err = ws.Buffer.Flush()
 
 	// return amount of bytes written and error
 	return nn, err
+}
+
+// Write function that allows sending your own flags
+func (ws *Ws) SpecialWrite(byteArray []byte, flags byte) (int, error) {
+	frame := ws.WriteFrame(byteArray, flags)
+	nn, err := ws.Buffer.Write(frame)
+	fmt.Println(err)
+	err = ws.Buffer.Flush()
+
+	// return amount of bytes written and error
+	return nn, err
+}
+
+// Sends a close frame with status code and a reason
+func (ws *Ws) Close(statusCode uint16, reason string) error {
+	if len(reason)+2 > 125 {
+		err := errors.New("control frame length exceeded 125")
+		return err
+	}
+
+	var data = new(bytes.Buffer)
+
+	binary.Write(data, binary.BigEndian, statusCode)
+	binary.Write(data, binary.BigEndian, reason)
+	fmt.Println(data.Bytes())
+	_, err := ws.SpecialWrite(data.Bytes(), 136)
+	return err
 }
