@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"mithril/websocket"
+	"mithril/wsserver"
 )
 
 func connection(ws *websocket.Ws) (uint16, error) {
@@ -23,5 +24,5 @@ func connection(ws *websocket.Ws) (uint16, error) {
 }
 
 func main() {
-	websocket.CreateWebSocket("127.0.0.1", "2000", connection, "/ws")
+	wsserver.CreateWebSocket("127.0.0.1", "2000", connection, "/ws")
 }

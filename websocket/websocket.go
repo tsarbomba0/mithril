@@ -1,5 +1,6 @@
 package websocket
 
+// Import containing the WebSocket struct and it's associated methods
 import (
 	"bufio"
 	"bytes"
@@ -8,107 +9,16 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
+	"mithril/util"
 	"net"
 	"regexp"
 	"strings"
 )
 
-var CloseCodes map[int]string = map[int]string{
-	1000: "NormalClosure",
-	1001: "GoingAway",
-	1002: "ProtocolError",
-	1003: "UnknownType",
-	1007: "InvalidPayloadData",
-	1008: "PolicyViolation",
-	1009: "MessageTooBig",
-	1010: "ExtensionError",
-	1011: "InternalError",
-}
-
-// TODO: Expand this
-var HttpErrorCodes map[string]string = map[string]string{
-	"400": "Bad request",
-	"401": "Unauthorized",
-	"403": "Forbidden",
-	"404": "Not Found",
-	"405": "Method Not Allowed",
-	"406": "Not Acceptable",
-	"407": "Proxy Authentication Required",
-	"408": "Request Timeout",
-}
-
 // WebSocket type
 type Ws struct {
 	Conn   net.Conn
-	Status uint8
 	Buffer *bufio.ReadWriter
-}
-
-// Error handler
-func onError(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
-// Creates a WebSocket server
-func CreateWebSocket(addr string, port string, handler func(websocket *Ws) (uint16, error), routeString string) {
-	listener, err := net.Listen("tcp", addr+":"+port)
-	onError(err)
-	defer listener.Close()
-
-	for {
-		// create listener
-		connection, err := listener.Accept()
-		onError(err)
-
-		// Buffer
-		buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
-
-		// goroutine
-		go func(ws *Ws) {
-			bytes := make([]byte, 256)
-			length, err := ws.Conn.Read(bytes)
-			if err == io.EOF {
-				ws.Conn.Close()
-			} else {
-				onError(err)
-			}
-
-			method, route, err := ws.determineRequest(bytes[:length])
-			onError(err)
-
-			if route == routeString {
-				if method != "GET" {
-					ws.Conn.Write([]byte("Invalid request method! Should be GET."))
-					ws.Conn.Close()
-					return
-				} else {
-
-					headers := ws.GetHTTPHeaders(bytes[:length])
-					ws.ServerHandshake(headers["Sec-WebSocket-Key"])
-
-					for {
-						status, err := handler(ws)
-						if err != nil {
-							fmt.Println("error: ", err)
-							ws.close(status, err.Error())
-							break
-						}
-
-					}
-
-				}
-
-			} else {
-				// this to be replaced with proper http response
-				ws.SendHTTPError("400", "Invalid route! ("+route+")")
-				ws.Conn.Close()
-			}
-		}(&Ws{Conn: connection, Buffer: buffer})
-
-	}
 }
 
 // Creates the hash used to accept a WebSocket connection.
@@ -126,7 +36,6 @@ func (ws Ws) ServerHandshake(secretKey string) {
 	req.WriteString("Connection: Upgrade\r\n")
 	req.WriteString("Upgrade: websocket\r\n")
 	req.WriteString(fmt.Sprintf("Sec-WebSocket-Accept: %s", ws.AcceptHash(secretKey)+"\r\n\r\n"))
-
 	ws.Conn.Write([]byte(req.String()))
 }
 
@@ -134,7 +43,6 @@ func (ws Ws) ServerHandshake(secretKey string) {
 func (ws Ws) GetHTTPHeaders(dataBytes []byte) map[string]string {
 	// Map to hold the headers
 	settings := make(map[string]string)
-
 	// Actual slice of headers from the request
 	headers := strings.Split(string(dataBytes), "\r\n")
 
@@ -143,11 +51,9 @@ func (ws Ws) GetHTTPHeaders(dataBytes []byte) map[string]string {
 		// splitting the string from the header
 		re := regexp.MustCompile(`:\s`)
 		splitString := re.Split(headers[i], -1)
-
-		// if length of the split string is equal to 1 (empty slice) AND the next slice is not empty, do a error
+		// if length of the split string is equal to 1 (empty slice) AND the next slice is not empty, return a error
 		if len(splitString) == 1 && len(re.Split(headers[i+1], -1)) != 1 {
-			onError(fmt.Errorf("unexpected separation of headers! (line %d)", i))
-
+			util.OnError(fmt.Errorf("unexpected separation of headers! (line %d)", i))
 			// else assign the value to the map
 		} else if len(splitString) != 1 {
 			key, value := splitString[0], splitString[1]
@@ -158,7 +64,7 @@ func (ws Ws) GetHTTPHeaders(dataBytes []byte) map[string]string {
 }
 
 // Function to determine the type of the request and the route
-func (ws Ws) determineRequest(byteArray []byte) (string, string, error) {
+func (ws Ws) DetermineRequest(byteArray []byte) (string, string, error) {
 	buf := make([]byte, 128)
 	reader := bytes.NewReader(byteArray)
 	index, err := reader.Read(buf)
@@ -170,92 +76,36 @@ func (ws Ws) determineRequest(byteArray []byte) (string, string, error) {
 	method := re.FindString(string(buf[:index]))
 
 	return method, route, err
-
 }
 
 // Function to send a HTTP error response
 func (ws Ws) SendHTTPError(errorCode string, reason string) {
 	var response strings.Builder
-	response.WriteString("HTTP/1.1 " + errorCode + " " + HttpErrorCodes[errorCode] + "\r\n")
+	response.WriteString("HTTP/1.1 " + errorCode + " " + util.HttpErrorCodes[errorCode] + "\r\n")
 	response.WriteString("Content-Type: text/plain\r\n")
 	response.WriteString("Content-Language: en\r\n\r\n")
 	response.WriteString(reason + "\r\n\r\n")
 	ws.Conn.Write([]byte(response.String()))
 }
 
-// Validates the received frame
-//
-// Returns a error (can be nil)
-func validate(frame []byte) (string, error) {
-	var err error
-
-	if len(frame) == 0 {
-		err = errors.New("empty array of bytes")
-		return "empty", err
-	}
-
-	var controlFrame bool = false
-	var frameType string
-
-	var fin byte = frame[0] & 128
-	var opcode byte = frame[0] & 15
-	var length byte = frame[1] & 127
-	var maskBit byte = frame[1] & 128
-
-	switch opcode {
-	case 0:
-		frameType = "continuation"
-	case 1:
-		frameType = "text"
-	case 2:
-		frameType = "binary"
-	case 8:
-		frameType = "close"
-		controlFrame = true
-	case 9:
-		frameType = "ping"
-		controlFrame = true
-	case 10:
-		frameType = "pong"
-		controlFrame = true
-	default:
-		return "unknown", errors.New("used a reserved opcode")
-	}
-
-	// Checks if a control frame is fragmented
-	if fin == 0 && controlFrame {
-		return frameType, errors.New("fragmented control frame")
-		// Checks if a control frame has a larger payload than 125 bytes
-	} else if controlFrame && length > 125 {
-		return frameType, errors.New("length of control frame payload larger than 125 bytes")
-		// checks for a unmasked frame
-	} else if maskBit == 0 && !controlFrame {
-		return frameType, errors.New("unmasked frame")
-	} else {
-		return frameType, nil
-	}
-
-}
-
 // Reads a frame and returns it as a string.
 //
 // Returns a bytearray and error (error can be nil)
-func (ws *Ws) readFrame(frame []byte) ([]byte, error, bool) {
+func (ws *Ws) ReadFrame(frame []byte) ([]byte, error, bool) {
 	// decoded payload
 	var decodedPayload bytes.Buffer
 
 	// Validating
-	frameType, err := validate(frame)
+	frameType, _, err := util.Validate(frame, true)
+
 	if err != nil {
 		return decodedPayload.Bytes(), err, false
 	}
 
 	// variable for determining if it's a close frame
 	var isClose bool = false
-
 	// mask variable
 	var mask []byte
-
 	// payload variable
 	var payload []byte
 
@@ -291,7 +141,7 @@ func (ws *Ws) readFrame(frame []byte) ([]byte, error, bool) {
 			}
 		}
 	case "ping":
-		ws.pong("Pong!")
+		ws.Pong("Pong!")
 
 	case "pong":
 		fmt.Println("Received a pong frame!")
@@ -341,7 +191,7 @@ func (ws *Ws) createFrame(content []byte, flags byte) []byte {
 func (ws *Ws) Read() ([]byte, error, bool) {
 	var byteArray []byte = make([]byte, 4096)
 	length, _ := ws.Buffer.Read(byteArray)
-	frame, err, isClose := ws.readFrame(byteArray[:length])
+	frame, err, isClose := ws.ReadFrame(byteArray[:length])
 
 	// return decoded frame and error
 	return frame, err, isClose
@@ -358,11 +208,9 @@ func (ws *Ws) Write(byteArray []byte) (int, error) {
 }
 
 // Write function that allows sending your own flags.
-func (ws *Ws) specialWrite(byteArray []byte, flags byte) (int, error) {
+func (ws *Ws) SpecialWrite(byteArray []byte, flags byte) (int, error) {
 	frame := ws.createFrame(byteArray, flags)
-
 	nn, err := ws.Buffer.Write(frame)
-
 	ws.Buffer.Flush()
 
 	// return amount of bytes written and error
@@ -372,7 +220,7 @@ func (ws *Ws) specialWrite(byteArray []byte, flags byte) (int, error) {
 // Sends a close frame with status code and a reason.
 //
 // Returns a error (can be nil)
-func (ws *Ws) close(statusCode uint16, reason string) error {
+func (ws *Ws) Close(statusCode uint16, reason string) error {
 	if len(reason)+2 > 125 {
 		err := errors.New("control frame length exceeded 125")
 		return err
@@ -382,7 +230,7 @@ func (ws *Ws) close(statusCode uint16, reason string) error {
 
 	binary.Write(data, binary.BigEndian, statusCode)
 	binary.Write(data, binary.BigEndian, []byte(reason))
-	_, err := ws.specialWrite(data.Bytes(), 136)
+	_, err := ws.SpecialWrite(data.Bytes(), 136)
 	ws.Conn.Close()
 	return err
 }
@@ -390,7 +238,7 @@ func (ws *Ws) close(statusCode uint16, reason string) error {
 // Sends a pong
 //
 // Returns a error (can be nil)
-func (ws *Ws) pong(pongMessage string) error {
+func (ws *Ws) Pong(pongMessage string) error {
 	ws.Buffer.Write([]byte{138})
 	_, err := ws.Buffer.Write([]byte(pongMessage))
 	ws.Buffer.Flush()
