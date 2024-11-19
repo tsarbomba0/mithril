@@ -1,28 +1,18 @@
 package main
 
 import (
-	"errors"
-	"mithril/websocket"
-	"mithril/wsserver"
+	"fmt"
+	"mithril/util"
+	"mithril/wsclient"
 )
 
-func connection(ws *websocket.Ws) (uint16, error) {
-	output, err, isClose := ws.Read()
-	if isClose {
-		return 1000, errors.New("closed")
-	} else if err != nil {
-		return 1011, err
-	}
+func conn(ws *wsclient.ClientWs) {
+	ws.Write([]byte("this stuff works i think"), 130)
+	o, err := ws.Read()
+	util.OnError(err)
+	fmt.Println(string(o))
 
-	if string(output) == "fake" {
-		return 1011, errors.New("test error")
-	} else {
-		ws.Write(output)
-	}
-
-	return 0, err
 }
-
 func main() {
-	wsserver.CreateWebSocket("127.0.0.1", "2000", connection, "/ws")
+	wsclient.ConnectWebSocket("127.0.0.1", "2000", conn)
 }

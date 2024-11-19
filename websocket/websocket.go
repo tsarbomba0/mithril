@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"mithril/util"
 	"net"
 	"regexp"
@@ -144,7 +145,7 @@ func (ws *Ws) ReadFrame(frame []byte) ([]byte, error, bool) {
 		ws.Pong("Pong!")
 
 	case "pong":
-		fmt.Println("Received a pong frame!")
+		log.Println("Received a pong frame!")
 
 	case "close":
 		isClose = true
@@ -232,6 +233,7 @@ func (ws *Ws) Close(statusCode uint16, reason string) error {
 	binary.Write(data, binary.BigEndian, []byte(reason))
 	_, err := ws.SpecialWrite(data.Bytes(), 136)
 	ws.Conn.Close()
+	log.Println("Closed connection!")
 	return err
 }
 
