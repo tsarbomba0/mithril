@@ -27,9 +27,11 @@ func main() {
 }
 ```
 
-### Client TODO!
+### Client
+
+Example in main.go rn
 
 ## Why?
-I wanted to dig some slightly more low-level stuff and i want to eventually built some weird database based on websockets.
+I wanted to dig some into slightly more low-level stuff and i want to eventually built some weird database based on websockets.
 
 
