@@ -18,8 +18,9 @@ import (
 
 // WebSocket type
 type Ws struct {
-	Conn   net.Conn
-	Buffer *bufio.ReadWriter
+	Conn     net.Conn
+	Buffer   *bufio.ReadWriter
+	PingSent bool
 }
 
 // Creates the hash used to accept a WebSocket connection.
@@ -142,10 +143,15 @@ func (ws *Ws) ReadFrame(frame []byte) ([]byte, error, bool) {
 			}
 		}
 	case "ping":
-		ws.Pong("Pong!")
+		ws.Pong()
 
 	case "pong":
-		log.Println("Received a pong frame!")
+		if ws.PingSent {
+			log.Println("Received a pong frame.")
+			ws.PingSent = false
+		} else {
+			log.Println("Received a pong frame without a earlier ping frame.")
+		}
 
 	case "close":
 		isClose = true
@@ -237,12 +243,18 @@ func (ws *Ws) Close(statusCode uint16, reason string) error {
 	return err
 }
 
+// Sends a ping
+//
+// Returns a error (can be nil)
+func (ws *Ws) Ping() error {
+	ws.Buffer.Write([]byte{137})
+	return ws.Buffer.Flush()
+}
+
 // Sends a pong
 //
 // Returns a error (can be nil)
-func (ws *Ws) Pong(pongMessage string) error {
+func (ws *Ws) Pong() error {
 	ws.Buffer.Write([]byte{138})
-	_, err := ws.Buffer.Write([]byte(pongMessage))
-	ws.Buffer.Flush()
-	return err
+	return ws.Buffer.Flush()
 }

@@ -11,8 +11,8 @@ func conn(ws *wsclient.ClientWs) {
 	o, err := ws.Read()
 	util.OnError(err)
 	fmt.Println(string(o))
-
 }
+
 func main() {
 	wsclient.ConnectWebSocket("127.0.0.1", "2000", conn)
 }
