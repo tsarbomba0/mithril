@@ -9,23 +9,73 @@ import (
 	"mithril/util"
 	"mithril/websocket"
 	"net"
+	"strconv"
 )
 
-// Creates a WebSocket server
-func CreateWebSocket(addr string, port string, handler func(websocket *websocket.Ws) (uint16, error), routeString string) {
-	listener, err := net.Listen("tcp", addr+":"+port)
+type Server struct {
+	Listener net.Listener
+	Clients  []*websocket.Ws
+	Address  string
+	Port     string
+}
+
+// Returns a Server struct.
+func initServer(address string, port string) *Server {
+	listener, err := net.Listen("tcp", address+":"+port)
 	util.OnError(err)
-	log.Println("Server listening on address: " + addr + " and port: " + port)
 
-	defer listener.Close()
+	log.Println("Server listening on address: " + address + " and port: " + port)
 
+	var clientSlice []*websocket.Ws
+
+	return &Server{
+		Listener: listener,
+		Clients:  clientSlice,
+		Address:  address,
+		Port:     port,
+	}
+}
+
+// Accepts a TCP connection.
+//
+// Returns a net.Conn.
+func (srv *Server) acceptConnection() *websocket.Ws {
+	// Accepting conneciton
+	connection, err := srv.Listener.Accept()
+	util.OnError(err)
+
+	// Buffer
+	buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
+	// WebSocket instance
+	ws := &websocket.Ws{Conn: connection, Buffer: buffer}
+
+	srv.Clients = append(srv.Clients, ws)
+	log.Println("Host " + connection.LocalAddr().String() + " connected.")
+
+	return ws
+}
+
+// Broadcasts data to all clients.
+func (srv *Server) BroadcastToAll(data []byte) {
+	for i := 0; i <= len(srv.Clients)-1; i++ {
+		_, err := srv.Clients[i].Write(data)
+		if err != nil {
+			srv.Clients[i] = srv.Clients[len(srv.Clients)-1]
+			srv.Clients = srv.Clients[:len(srv.Clients)-1]
+			log.Println(err)
+		}
+	}
+	log.Println("Broadcasted " + strconv.Itoa(len(data)) + " bytes of data to all clients.")
+
+}
+
+// Creates a WebSocket server
+func CreateWebSocket(addr string, port string, handler func(websocket *websocket.Ws, server *Server) (uint16, error), routeString string) {
+	server := initServer(addr, port)
+	defer server.Listener.Close()
 	for {
 		// create listener
-		connection, err := listener.Accept()
-		util.OnError(err)
-
-		// Buffer
-		buffer := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
+		websocketInstance := server.acceptConnection()
 
 		// goroutine
 		go func(ws *websocket.Ws) {
@@ -53,7 +103,7 @@ func CreateWebSocket(addr string, port string, handler func(websocket *websocket
 					log.Println("Sent handshake to client.")
 
 					for {
-						status, err := handler(ws)
+						status, err := handler(ws, server)
 						if err != nil {
 							log.Println("exception: ", err, " Closing connection.")
 							ws.Close(status, err.Error())
@@ -66,6 +116,6 @@ func CreateWebSocket(addr string, port string, handler func(websocket *websocket
 				ws.SendHTTPError("400", "Invalid route! ("+route+")")
 				ws.Conn.Close()
 			}
-		}(&websocket.Ws{Conn: connection, Buffer: buffer})
+		}(websocketInstance)
 	}
 }

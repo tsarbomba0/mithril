@@ -2,17 +2,21 @@ package main
 
 import (
 	"fmt"
-	"mithril/util"
-	"mithril/wsclient"
+	"mithril/websocket"
+	"mithril/wsserver"
 )
 
-func conn(ws *wsclient.ClientWs) {
-	ws.Write([]byte("this stuff works i think"), 130)
-	o, err := ws.Read()
-	util.OnError(err)
-	fmt.Println(string(o))
+func connection(ws *websocket.Ws, srv *wsserver.Server) (uint16, error) {
+	output, err, isClose := ws.Read()
+	fmt.Println(string(output), isClose)
+	fmt.Println(srv.Clients)
+	if string(output) == "test" {
+		srv.BroadcastToAll([]byte("Hahaha!"))
+	}
+
+	return 0, err
 }
 
 func main() {
-	wsclient.ConnectWebSocket("127.0.0.1", "2000", conn)
+	wsserver.CreateWebSocket("127.0.0.1", "1233", connection, "/ws")
 }

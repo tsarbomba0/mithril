@@ -238,6 +238,7 @@ func (ws *Ws) Close(statusCode uint16, reason string) error {
 	binary.Write(data, binary.BigEndian, statusCode)
 	binary.Write(data, binary.BigEndian, []byte(reason))
 	_, err := ws.SpecialWrite(data.Bytes(), 136)
+
 	ws.Conn.Close()
 	log.Println("Closed connection!")
 	return err
