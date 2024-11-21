@@ -1,11 +1,12 @@
 # Mithril
-Not yet functional library for handling WebSocket connections.
+Mostly functional.
+Lacks TLS.
 
 ## Goals
-Making it fully functional and easy to use.
-Deflate algorithm stuff?
+Making it secure (TLS) and easy to use.
+Make it support the DEFLATE algorithm.
 
-## Examples of functionality
+## Examples
 
 ### Basic WebSocket server (prints out the received bytes)
 ```go
@@ -28,10 +29,28 @@ func main() {
 ```
 
 ### Client
+```go
+package main
 
-Example in main.go rn
+import (
+	"fmt"
+	"mithril/util"
+	"mithril/wsclient"
+)
 
-## Why?
-I wanted to dig some into slightly more low-level stuff and i want to eventually built some weird database based on websockets.
+func conn(ws *wsclient.ClientWs) {
+	ws.Write([]byte("this stuff works i think"), 130)
+	o, err := ws.Read()
+	util.OnError(err)
+	fmt.Println(string(o))
+}
+
+func main() {
+	wsclient.ConnectWebSocket("127.0.0.1", "2000", conn)
+}
+```
+
+## Reason
+I wanted to dig some into slightly more low-level stuff and i want to eventually build some weird database based on websockets.
 
 
